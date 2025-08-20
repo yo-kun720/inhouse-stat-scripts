@@ -280,13 +280,160 @@ binary_analysis = function(dat, group_var, group_labels,
   return(tmpres)
 }
 
+logistic_table_multivar = function(
+    dat,
+    covar_labels,            # 例: c(Treatment_Group="治療群", Age="年齢", Gender="性別", ...)
+    level_labels = list(),   # 例: list(Gender = c(Male="男性", Female="女性"))
+    outcome_var,             # 0/1 または 因子/文字（event_level で陽性側を指定）
+    event_level = 1,         # outcome_var が因子/文字のとき「イベント」と見なす水準
+    OR_CI_level = 0.95,      # OR の信頼水準
+    return_gt = TRUE         # TRUE: gt テーブル, FALSE: data.frame
+){
+  #' Multivariable Logistic model table (image-like layout)
+  #' - Continuous vars -> 1 row (per 1-unit increase)
+  #' - Categorical vars -> ref row + rows for each non-ref level
+  #' @param dat 使用するデータフレーム（1行=1症例）
+  #' @param covar_labels 解析に入れる説明変数の"名前付きベクトル"（var名=表示名）
+  #' @param level_labels 各因子の"名前付きベクトル"を入れたリスト。
+  #'   ベクトルの「名前=元レベル値」「値=表示ラベル」。先頭要素が基準水準(ref)。
+  #' @param outcome_var 目的変数の列名（0/1 または 因子/文字列）
+  #' @param event_level outcome_var が因子/文字列のとき「イベント」と見なす水準
+  #' @param OR_CI_level OR の信頼水準 (0–1)。既定 0.95
+  #' @param return_gt TRUE で gt テーブル、FALSE で data.frame を返す
+  #' @return gt テーブル（もしくは data.frame）
+  
+  req_pkgs = c("broom", "dplyr", "stringr", "rlang", "stats")
+  miss = req_pkgs[!vapply(req_pkgs, requireNamespace, logical(1), quietly = TRUE)]
+  if (length(miss)) stop("Missing packages: ", paste(miss, collapse = ", "))
+  `%>%` = get("%>%", asNamespace("dplyr"))
+  `%||%` = function(a, b) if (!is.null(a)) a else b
+  
+  dat2 = dat
+  
+  # --- 目的変数を 0/1 に整形 ---
+  y = dat2[[outcome_var]]
+  if (is.logical(y)) {
+    y_bin = as.integer(y)
+  } else if (is.numeric(y)) {
+    # 0/1 以外が混じっていれば警告
+    uy = unique(na.omit(y))
+    if (!all(uy %in% c(0,1))) warning("outcome_var has values other than 0/1; treating nonzero as 1.")
+    y_bin = as.integer(y != 0)
+  } else {
+    # 因子/文字列 → event_level を 1、それ以外 0
+    y_bin = as.integer(as.character(y) == as.character(event_level))
+}
+  dat2[[".y"]] = y_bin
+
+  # --- 因子の水準順・ラベルの指定 ---
+  disp_levels = list()
+  raw_levels  = list()
+  for (v in names(covar_labels)) {
+    x = dat2[[v]]
+    ll = level_labels[[v]]
+    if (!is.null(ll)) {
+      if (is.null(names(ll)))
+        stop("level_labels[['", v, "']] must be a *named* character vector: names=raw levels, values=labels.")
+      raw_levels[[v]]  = names(ll)
+      disp_levels[[v]] = unname(ll)
+      dat2[[v]] = factor(as.character(x), levels = raw_levels[[v]])
+    } else {
+      if (is.character(x) || is.factor(x)) {
+        dat2[[v]] = factor(x)
+        raw_levels[[v]]  = levels(dat2[[v]])
+        disp_levels[[v]] = raw_levels[[v]]
+      }
+    }
+  }
+  
+  # --- フォーミュラ作成 & モデル当て ---
+  backtick = function(s) paste0("`", s, "`")
+  rhs = paste(backtick(names(covar_labels)), collapse = " + ")
+  fml = stats::as.formula(paste0(".y ~ ", rhs))
+  
+  fit = stats::glm(fml, data = dat2, family = stats::binomial(link = "logit"), na.action = stats::na.omit)
+  
+  td = broom::tidy(fit, exponentiate = TRUE, conf.int = TRUE, conf.level = OR_CI_level)
+  mm_terms = colnames(stats::model.matrix(fit))
+  mm_terms = mm_terms[mm_terms != "(Intercept)"]
+  
+  fmt_num = function(x, d = 3) ifelse(is.na(x), "", formatC(x, format = "f", digits = d))
+  fmt_p   = function(p) ifelse(is.na(p), "",
+                                ifelse(p < 0.001, "<.001",
+                                       formatC(round(p, 3), format = "f", digits = 3)))
+  term_for = function(v, lev = NULL) {
+    if (is.null(lev)) make.names(v) else make.names(paste0(v, lev))
+  }
+  make_orci = function(est, lo, hi, d = 3){
+    if (any(is.na(c(est, lo, hi)))) "" else
+      paste0(fmt_num(est, d), " (", fmt_num(lo, d), ", ", fmt_num(hi, d), ")")
+  }
+  
+  out_rows = list()
+  for (v in names(covar_labels)) {
+    v_label = covar_labels[[v]]
+    x = dat2[[v]]
+    
+    if (is.factor(x)) {
+      levs_raw  = levels(x)
+      levs_disp = (disp_levels[[v]] %||% levs_raw)
+      # ref 行
+      out_rows[[length(out_rows)+1]] = data.frame(
+        項目 = v_label, 値 = levs_disp[1],
+        OR_95CI = "ref", p_value = "", stringsAsFactors = FALSE
+      )
+      # 非ref 行
+      if (length(levs_raw) >= 2) {
+        for (k in 2:length(levs_raw)) {
+          trm = term_for(v, levs_raw[k])
+          row = td[match(trm, td$term), ]
+          out_rows[[length(out_rows)+1]] = data.frame(
+            項目 = "", 値 = levs_disp[k],
+            OR_95CI = make_orci(row$estimate, row$conf.low, row$conf.high, d = 3),
+            p_value = fmt_p(row$p.value),
+            stringsAsFactors = FALSE
+          )
+        }
+      }
+    } else {
+      # 連続変数
+      trm = term_for(v, NULL)
+      row = td[match(trm, td$term), ]
+      out_rows[[length(out_rows)+1]] = data.frame(
+        項目 = v_label, 値 = "",
+        OR_95CI = make_orci(row$estimate, row$conf.low, row$conf.high, d = 3),
+        p_value = fmt_p(row$p.value),
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  
+  res_df = dplyr::bind_rows(out_rows)
+  if (!return_gt) return(res_df)
+  
+  res_df |>
+    gt::gt() |>
+    gt::cols_label(
+      項目    = "項目",
+      値      = "値",
+      OR_95CI = "OR (95% 信頼区間)",
+      p_value = "p-値"
+    ) |>
+    gt::tab_options(
+      table.font.size = gt::px(12),
+      data_row.padding = gt::px(4)
+    ) |>
+    gt::cols_align(align = "center", columns = c(OR_95CI, p_value)) |>
+    gt::cols_align(align = "left",   columns = c(項目, 値))
+}
+
 survival_analysis = function(dat, group_var, group_labels, 
                              event_var, time_var,
                              max_obs_time,
                              HR_CI_level = 0.95){
   #' 生存時間変数に対する解析を実施する関数
   #' last update: 2025/6/20
-  #' @param dat 使用するBLデータセット（基本的に1人1行）
+  #' @param dat 使用するデータセット（1人1行）
   #' @param group_var 治療群などの群を表す変数
   #' @param group_labels 治療群に対するラベル．治療群に対するラベル．水準の順序（factor関数のlevels引数）と同じにする．
   #' @param event_var イベント発生を表す変数名．1がイベント．0が打ち切り．
@@ -388,6 +535,148 @@ KM_curve = function(dat, group_var, group_labels,
   print(p)
 }
 
+cox_table_multivar = function(
+    dat,
+    covar_labels,            # 例: c(Treatment_Group="治療手法", Age="年齢", Gender="性別", ...)
+    level_labels = list(),   # 例: list(Gender = c(Female="F (女性)", Male="M (男性)"))
+    event_var,               # 例: "Event"  (1=event, 0=censor)
+    time_var,                # 例: "Observed_Time"
+    max_obs_time = NULL,     # 例: 90  (NULL なら変更しない)
+    HR_CI_level = 0.95,      # 例: 0.95
+    return_gt = TRUE         # TRUE で gt テーブルを返す。FALSE で data.frame を返す
+){
+  #' Multivariable Cox model table (image-like layout)
+  #' - Continuous vars -> 1 row (per 1-unit increase)
+  #' - Categorical vars -> ref row + rows for each non-ref level
+  #' @param dat 使用するデータフレーム（1行=1症例）
+  #' @param covar_labels 解析に入れる説明変数の"名前付きベクトル"（var名=表示名）
+  #' @param level_labels 各因子の"名前付きベクトル"を入れたリスト。
+  #'   ベクトルの「名前=元レベル値」「値=表示ラベル」。先頭要素が基準水準(ref)。
+  #' @param event_var イベント指標(1=イベント, 0=打ち切り)の列名（文字列）
+  #' @param time_var  イベント/打ち切り時刻の列名（文字列）
+  #' @param max_obs_time 観察の最大時点。超過は時刻を切り詰め event=0 に変更（NULLなら無効）
+  #' @param HR_CI_level HR の信頼水準 (0–1)。既定 0.95
+  #' @param return_gt TRUE で gt テーブル、FALSE で data.frame を返す
+  #' @return gt テーブル（もしくは data.frame）
+
+  req_pkgs = c("survival", "broom", "dplyr", "stringr", "rlang")
+  miss = req_pkgs[!vapply(req_pkgs, requireNamespace, logical(1), quietly = TRUE)]
+  if (length(miss)) stop("Missing packages: ", paste(miss, collapse = ", "))
+  `%>%` = get("%>%", asNamespace("dplyr"))
+  `%||%` = function(a, b) if (!is.null(a)) a else b
+  
+  # --- 事前整形（管理打ち切りの適用） ---
+  dat2 = dat
+  tvec = dat2[[time_var]]
+  evec = dat2[[event_var]]
+  if (!is.null(max_obs_time)) {
+    dat2[[".time"]]  = pmin(tvec, max_obs_time)
+    dat2[[".event"]] = ifelse(tvec > max_obs_time, 0L, evec)
+  } else {
+    dat2[[".time"]]  = tvec
+    dat2[[".event"]] = evec
+  }
+  
+  # --- 因子の水準順・ラベルの指定 ---
+  disp_levels = list()
+  raw_levels  = list()
+  for (v in names(covar_labels)) {
+    x = dat2[[v]]
+    ll = level_labels[[v]]
+    if (!is.null(ll)) {
+      if (is.null(names(ll)))
+        stop("level_labels[['", v, "']] must be a *named* character vector: names=raw levels, values=labels.")
+      raw_levels[[v]]  = names(ll)
+      disp_levels[[v]] = unname(ll)
+      dat2[[v]] = factor(as.character(x), levels = raw_levels[[v]])
+    } else {
+      if (is.character(x) || is.factor(x)) {
+        dat2[[v]] = factor(x)
+        raw_levels[[v]]  = levels(dat2[[v]])
+        disp_levels[[v]] = raw_levels[[v]]
+      }
+    }
+  }
+  
+  # --- フォーミュラ作成 & モデル当て ---
+  backtick = function(s) paste0("`", s, "`")
+  rhs = paste(backtick(names(covar_labels)), collapse = " + ")
+  fml = stats::as.formula(paste0("survival::Surv(.time, .event) ~ ", rhs))
+  fit = survival::coxph(fml, data = dat2, ties = "efron", model = TRUE)
+  
+  td = broom::tidy(fit, exponentiate = TRUE, conf.int = TRUE, conf.level = HR_CI_level)
+  mm_terms = colnames(stats::model.matrix(fit))
+  mm_terms = mm_terms[mm_terms != "(Intercept)"]
+  
+  fmt_num = function(x, d = 3) ifelse(is.na(x), "", formatC(x, format = "f", digits = d))
+  fmt_p   = function(p) ifelse(is.na(p), "",
+                                ifelse(p < 0.001, "<.001",
+                                       formatC(round(p, 3), format = "f", digits = 3)))
+  term_for = function(v, lev = NULL) {
+    if (is.null(lev)) make.names(v) else make.names(paste0(v, lev))
+  }
+  make_hrci = function(est, lo, hi, d = 3){
+    if (any(is.na(c(est, lo, hi)))) "" else
+      paste0(fmt_num(est, d), " (", fmt_num(lo, d), ", ", fmt_num(hi, d), ")")
+  }
+  
+  out_rows = list()
+  for (v in names(covar_labels)) {
+    v_label = covar_labels[[v]]
+    x = dat2[[v]]
+    
+    if (is.factor(x)) {
+      levs_raw  = levels(x)
+      levs_disp = (disp_levels[[v]] %||% levs_raw)
+      # ref 行
+      out_rows[[length(out_rows)+1]] = data.frame(
+        項目 = v_label, 値 = levs_disp[1],
+        HR_95CI = "ref", p_value = "", stringsAsFactors = FALSE
+      )
+      # 非ref 行
+      if (length(levs_raw) >= 2) {
+        for (k in 2:length(levs_raw)) {
+          trm = term_for(v, levs_raw[k])
+          row = td[match(trm, td$term), ]
+          out_rows[[length(out_rows)+1]] = data.frame(
+            項目 = "", 値 = levs_disp[k],
+            HR_95CI = make_hrci(row$estimate, row$conf.low, row$conf.high, d = 3),
+            p_value = fmt_p(row$p.value),
+            stringsAsFactors = FALSE
+          )
+        }
+      }
+    } else {
+      # 連続変数
+      trm = term_for(v, NULL)
+      row = td[match(trm, td$term), ]
+      out_rows[[length(out_rows)+1]] = data.frame(
+        項目 = v_label, 値 = "",
+        HR_95CI = make_hrci(row$estimate, row$conf.low, row$conf.high, d = 3),
+        p_value = fmt_p(row$p.value),
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  
+  res_df = dplyr::bind_rows(out_rows)
+  if (!return_gt) return(res_df)
+  
+  res_df |>
+    gt::gt() |>
+    gt::cols_label(
+      項目    = "項目",
+      値      = "値",
+      HR_95CI = "HR (95% 信頼区間)",
+      p_value = "p-値"
+    ) |>
+    gt::tab_options(
+      table.font.size = gt::px(12),
+      data_row.padding = gt::px(4)
+    ) |>
+    gt::cols_align(align = "center", columns = c(HR_95CI, p_value)) |>
+    gt::cols_align(align = "left",   columns = c(項目, 値))
+}
 
 AE_all_item = function(dat, group_var, group_labels, 
                        AE_name_var, AE_cate_vars, AE_cate, 

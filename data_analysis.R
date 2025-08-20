@@ -30,8 +30,11 @@ res = tab1_discrete(dat, "Treatment_Group", c("Control", "Treatment"), "Severity
 export_table(res, "outputs/result_output.xlsx", r_begin = 1, c_begin = 1, 
              sn = "T01", fig_name = NULL, add_table = FALSE, rowName = TRUE)
 
-# T02 2値データの解析　---------------------------------------------------------------------
-dat = use_data %>% filter(fas == '採用', Time_point == 'Followup_1')
+# T02 2値データの解析(割合の比や差の算出) ---------------------------------------------------------------------
+dat = use_data %>% filter(fas == '採用', Time_point == 'Followup_1') %>% 
+  select(ID, Time_point, Treatment_Group, Death_till_30, Death_till_60, Death_till_90) %>% 
+  merge(use_data %>% filter(fas == '採用', Time_point == 'Baseline') %>% select(ID, Age, Gender, Smoker, BMI, Severity_scale),
+        by = "ID")
 
 res = binary_analysis(dat = dat, 
                       group_var = "Treatment_Group",
@@ -49,7 +52,28 @@ res = binary_analysis(dat = dat,
 export_table(res, "outputs/result_output.xlsx", r_begin = 1, c_begin = 1, 
              sn = "T02", fig_name = NULL, add_table = TRUE, rowName = TRUE)
 
-# T03 生存時間解析 --------------------------------------------------------------
+# T03 2値データの解析(ロジスティック回帰モデルによるオッズ比) --------------------------------------------------------------
+res = logistic_table_multivar(dat           = dat,          # データフレーム
+                              covar_labels  = c(Treatment_Group = "治療群", # 変数名=表示名
+                                                Age             = "年齢",
+                                                Gender          = "性別",
+                                                Smoker          = "喫煙歴",
+                                                BMI             = "BMI",
+                                                Severity_scale  = "重症度スコア"),             
+                              # 水準ラベル（必要なものだけ指定。未指定の因子はデータの既存順で ref 決定）
+                              level_labels  = list(Treatment_Group = c(Control = "Control", Treatment = "Treatment"), # 因子の元レベル=>表示ラベル
+                                                   Gender          = c(Female = "F (女性)", Male = "M (男性)"),
+                                                   Smoker          = c(No = "0 (なし)", Yes = "1 (あり)")),
+                              # BMI, Severity_scale は連続想定なので指定不要
+                              outcome_var     = "Death_till_30",
+                              OR_CI_level   = 0.95,
+                              return_gt     = FALSE
+)
+
+export_table(res, "outputs/result_output.xlsx", r_begin = 1, c_begin = 1, 
+             sn = "T03", fig_name = NULL, add_table = TRUE, rowName = TRUE)
+
+# T04 生存時間解析(生存時間中央値と介入に関するハザード比) --------------------------------------------------------------
 dat = merge(use_data %>% filter(fas == '採用', Time_point == 'Baseline') %>% select(ID, Date_of_enroll),
             use_data %>% filter(fas == '採用', Time_point == 'Followup_1') %>% select(ID, Death_till_30),
             by = "ID") %>% 
@@ -59,6 +83,8 @@ dat = merge(use_data %>% filter(fas == '採用', Time_point == 'Baseline') %>% s
         by = "ID") %>% 
   merge(use_data %>% filter(fas == "採用", Time_point == 'End_of_Study') %>% 
           select(ID, Treatment_Group, Observed_Time, Event, End_date),
+        by = "ID") %>% 
+  merge(use_data %>% filter(fas == '採用', Time_point == 'Baseline') %>% select(ID, Age, Gender, Smoker, BMI, Severity_scale),
         by = "ID")
 
 res = survival_analysis(dat = dat, 
@@ -69,7 +95,8 @@ res = survival_analysis(dat = dat,
                         max_obs_time = 30,
                         HR_CI_level = 0.95)
 export_table(res, "outputs/result_output.xlsx", r_begin = 1, c_begin = 1, 
-             sn = "T03", fig_name = NULL, add_table = TRUE, rowName = TRUE)
+             sn = "T04", fig_name = NULL, add_table = TRUE, rowName = TRUE)
+
 
 # F01 KM曲線 ----------------------------------------------------------------
 # R studioのPlotsタブにプロットが表示される
@@ -86,7 +113,30 @@ KM = KM_curve(dat = dat,
 ggsave(file = 'outputs/Figure_KM.jpeg', plot = KM, device = "jpeg", 
        dpi = 600, width = 4/3*4.8*2, height = 4.8*2)
 
-# T04 AE全体全種類 --------------------------------------------------------------------
+# T05 生存時間解析(Cox比例ハザードモデルによるハザード比) --------------------------------------------------------------
+res = cox_table_multivar(dat           = dat,          # データフレーム
+                         covar_labels  = c(Treatment_Group = "治療群", # 変数名=表示名
+                                           Age             = "年齢",
+                                           Gender          = "性別",
+                                           Smoker          = "喫煙歴",
+                                           BMI             = "BMI",
+                                           Severity_scale  = "重症度スコア"),             
+                         # 水準ラベル（必要なものだけ指定。未指定の因子はデータの既存順で ref 決定）
+                         level_labels  = list(Treatment_Group = c(Control = "Control", Treatment = "Treatment"), # 因子の元レベル=>表示ラベル
+                                              Gender          = c(Female = "F (女性)", Male = "M (男性)"),
+                                              Smoker          = c(No = "0 (なし)", Yes = "1 (あり)")),
+                         # BMI, Severity_scale は連続想定なので指定不要
+                         event_var     = "Death_till_30",
+                         time_var      = "Observed_Time",
+                         max_obs_time  = 30, 
+                         HR_CI_level   = 0.95,
+                         return_gt     = FALSE)
+
+export_table(res, "outputs/result_output.xlsx", r_begin = 1, c_begin = 1, 
+             sn = "T05", fig_name = NULL, add_table = TRUE, rowName = TRUE)
+
+
+# T21 AE全体全種類 --------------------------------------------------------------------
 dat = use_data %>% filter(sas == '採用')
 res = NULL
 res = AE_all_item(dat = dat, 
@@ -100,10 +150,10 @@ res = AE_all_item(dat = dat,
                   res = res, 
                   subjid_var = 'ID')
 export_table(res, "outputs/result_output.xlsx", r_begin = 1, c_begin = 1, 
-             sn = "T04", fig_name = NULL, add_table = TRUE, rowName = TRUE)
+             sn = "T21", fig_name = NULL, add_table = TRUE, rowName = TRUE)
 
 
-# T05 AE各項目の集計 ----------------------------------------------------------------
+# T22 AE各項目の集計 ----------------------------------------------------------------
 with_95CI = TRUE # AE発生割合のCI有無
 
 dat = use_data %>% filter(sas == '採用')
@@ -128,9 +178,9 @@ res = AE_each_item(dat, "Treatment_Group", c("Control", "Treatment"), 'AE_Term',
                    'Fever', '発熱',
                    res, 'ID', with_95CI)
 export_table(res, "outputs/result_output.xlsx", r_begin = 1, c_begin = 1, 
-             sn = "T05", fig_name = NULL, add_table = TRUE, rowName = TRUE)
+             sn = "T22", fig_name = NULL, add_table = TRUE, rowName = TRUE)
 
-# T06 因果関係ごとのAE各項目の集計 ----------------------------------------------------------------
+# T23 因果関係ごとのAE各項目の集計 ----------------------------------------------------------------
 dat = use_data %>% filter(sas == '採用')
 
 res = NULL
@@ -156,9 +206,9 @@ res = AE_each_item_by_cate(dat, "Treatment_Group", c("Control", "Treatment"), 'A
                            res, 'ID', with_95CI)
 
 export_table(res, "outputs/result_output.xlsx", r_begin = 1, c_begin = 1, 
-             sn = "T06", fig_name = NULL, add_table = TRUE, rowName = TRUE)
+             sn = "T23", fig_name = NULL, add_table = TRUE, rowName = TRUE)
 
-# T07 重篤性ごとのAE各項目の集計 ----------------------------------------------------------------
+# T24 重篤性ごとのAE各項目の集計 ----------------------------------------------------------------
 dat = use_data %>% filter(sas == '採用')
 
 res = NULL
@@ -183,9 +233,9 @@ res = AE_each_item_by_cate(dat, "Treatment_Group", c("Control", "Treatment"), 'A
                            res, 'ID', with_95CI)
 
 export_table(res, "outputs/result_output.xlsx", r_begin = 1, c_begin = 1, 
-             sn = "T07", fig_name = NULL, add_table = TRUE, rowName = TRUE)
+             sn = "T24", fig_name = NULL, add_table = TRUE, rowName = TRUE)
 
-# T08 グレードごとのAE各項目の集計 ----------------------------------------------------------------
+# T25 グレードごとのAE各項目の集計 ----------------------------------------------------------------
 dat = use_data %>% filter(sas == '採用')
 
 res = NULL
@@ -210,11 +260,11 @@ res = AE_each_item_by_cate(dat, "Treatment_Group", c("Control", "Treatment"), 'A
                            res, 'ID', with_95CI)
 
 export_table(res, "outputs/result_output.xlsx", r_begin = 1, c_begin = 1, 
-             sn = "T08", fig_name = NULL, add_table = TRUE, rowName = TRUE)
+             sn = "T25", fig_name = NULL, add_table = TRUE, rowName = TRUE)
 
 
 
-# T09 臨床検査値 -------------------------------------------------------------------
+# T26 臨床検査値 -------------------------------------------------------------------
 dat = use_data %>% filter(sas == '採用')
 timepoints = c("Followup_1", "Followup_2", "Followup_3", "Followup_4", "Followup_5")
 
@@ -247,4 +297,4 @@ res = summarise_labo_discre(dat = dat,
                             subjid_var = 'ID')
 
 export_table(res, "outputs/result_output.xlsx", r_begin = 1, c_begin = 2, 
-             sn = "T09", fig_name = NULL, add_table = TRUE, rowName = TRUE)
+             sn = "T26", fig_name = NULL, add_table = TRUE, rowName = TRUE)
