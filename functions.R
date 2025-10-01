@@ -796,7 +796,7 @@ AE_each_item = function(dat, group_var, group_labels,
   
   if(with_95CI){
     tmp = c(paste0(whole, ' (', round2(whole/N*100, 1), ')'), 
-            paste0(round2(whole_CI$lower*100, 1), ", ", round2(whole_CI$upper*100, 1)))
+            paste0(round2(whole_CI$conf.int[1]*100, 1), ", ", round2(whole_CI$conf.int[2]*100, 1)))
   }else{
     tmp = c(paste0(whole, ' (', round2(whole/N*100, 1), ')'))
   }
@@ -821,7 +821,7 @@ AE_each_item = function(dat, group_var, group_labels,
     
     if(with_95CI){
       tmp %<>% c(paste0(whole, ' (', round2(whole/N*100, 1), ')'), 
-                 paste0(round2(whole_CI$lower*100, 1), ", ", round2(whole_CI$upper*100, 1)))
+                 paste0(round2(whole_CI$conf.int[1]*100, 1), ", ", round2(whole_CI$conf.int[2]*100, 1)))
     }else{
       tmp %<>% c(paste0(whole, ' (', round2(whole/N*100, 1), ')'))
     }
@@ -878,7 +878,7 @@ AE_each_item_by_cate = function(dat, group_var, group_labels,
       
       if(with_95CI){
         tmp %<>% c(paste0(N_each_cate, ' (', round2(N_each_cate/N*100, 1), ')'), 
-                   paste0(round2(CI$lower*100, 1), ", ", round2(CI$upper*100, 1)))
+                   paste0(round2(CI$conf.int[1]*100, 1), ", ", round2(CI$conf.int[2]*100, 1)))
       }else{
         tmp %<>% c(paste0(N_each_cate, ' (', round2(N_each_cate/N*100, 1), ')'))
       }
@@ -909,7 +909,7 @@ AE_each_item_by_cate = function(dat, group_var, group_labels,
         
         if(with_95CI){
           tmp %<>% c(paste0(N_each_cate, ' (', round2(N_each_cate/N*100, 1), ')'), 
-                     paste0(round2(CI$lower*100, 1), ", ", round2(CI$upper*100, 1)))
+                     paste0(round2(CI$conf.int[1]*100, 1), ", ", round2(CI$conf.int[2]*100, 1)))
         }else{
           tmp %<>% c(paste0(N_each_cate, ' (', round2(N_each_cate/N*100, 1), ')'))
         }      }
